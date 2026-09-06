@@ -95,6 +95,18 @@ SECRET_FILE_PATTERNS: tuple[str, ...] = (
     "service-account*.json",
 )
 
+# Added back after cap_drop=ALL. Deliberately excludes NET_RAW, MKNOD, SYS_CHROOT,
+# SYS_ADMIN, SETPCAP and SETFCAP -- the ones that matter for container escape.
+DEFAULT_SANDBOX_CAPABILITIES: tuple[str, ...] = (
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "FOWNER",
+    "FSETID",
+    "SETUID",
+    "SETGID",
+    "KILL",
+)
+
 # Host directories a project path may never resolve into.
 DENIED_PROJECT_ROOTS: tuple[str, ...] = (
     "/etc",
@@ -206,6 +218,15 @@ class Settings(BaseSettings):
     allow_writable_bind_mounts: bool = Field(
         default=False,
         description="Opt in to writable host bind mounts. Off by default; it defeats the point.",
+    )
+    sandbox_capabilities: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SANDBOX_CAPABILITIES),
+        description=(
+            "Capabilities added back after dropping ALL. The default set is what real "
+            "toolchains need (package managers chown caches and drop privileges for "
+            "lifecycle scripts) minus everything that helps an escape: no NET_RAW, no "
+            "MKNOD, no SYS_*, no SETPCAP/SETFCAP."
+        ),
     )
     sandbox_user: str | None = Field(
         default=None,

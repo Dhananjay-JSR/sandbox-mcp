@@ -131,7 +131,7 @@ class DockerSandboxBackend(SandboxBackend):
         handle = SandboxHandle(
             sandbox_id=container_id,
             workspace=spec.workspace_path,
-            metadata={"network": network_name, "image": spec.base_image},
+            metadata={"network": network_name, "image": spec.base_image, "user": spec.user},
         )
 
         try:
@@ -225,6 +225,7 @@ class DockerSandboxBackend(SandboxBackend):
             # --- isolation ---
             "privileged": False,
             "cap_drop": ["ALL"],
+            "cap_add": list(self._settings.sandbox_capabilities),
             "security_opt": ["no-new-privileges:true"],
             # --- resource ceilings ---
             "nano_cpus": int(resources.cpu_limit * 1_000_000_000),
@@ -260,7 +261,7 @@ class DockerSandboxBackend(SandboxBackend):
         self, container: Any, spec: ExperimentSpec, snapshot_dir: Path
     ) -> None:
         """Stream the snapshot in as a tar. The host tree is never bind-mounted."""
-        archive = await asyncio.to_thread(_tar_directory, snapshot_dir)
+        archive = await asyncio.to_thread(_tar_directory, snapshot_dir, _owner_ids(spec.user))
         try:
             await asyncio.to_thread(container.put_archive, spec.workspace_path, archive)
         except (APIError, DockerException) as exc:
@@ -517,7 +518,9 @@ class DockerSandboxBackend(SandboxBackend):
     async def write_file(self, handle: SandboxHandle, path: str, content: bytes) -> None:
         container = await self._get_container(handle)
         posix = Path(path)
-        archive = await asyncio.to_thread(_tar_single_file, posix.name, content)
+        archive = await asyncio.to_thread(
+            _tar_single_file, posix.name, content, _owner_ids(handle.metadata.get("user"))
+        )
         parent = posix.parent.as_posix()
         await self._exec(container, f"mkdir -p {shlex.quote(parent)}", timeout=30, workdir="/")
         try:
@@ -656,23 +659,60 @@ class _OutputCollector:
         return b"".join(self._stderr).decode("utf-8", errors="replace")
 
 
-def _tar_directory(source: Path) -> bytes:
-    """Tar a directory's *contents* for ``put_archive``."""
+def _tar_directory(source: Path, owner: tuple[int, int] = (0, 0)) -> bytes:
+    """Tar a directory's *contents* for ``put_archive``.
+
+    Host uid/gid are stripped: they mean nothing inside the container and, when
+    preserved, leave the workspace unwritable by the sandbox user. Modes are
+    normalised to 0644/0755, keeping only the executable bit.
+    """
+    uid, gid = owner
     buffer = io.BytesIO()
+
+    def normalise(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        info.uid, info.gid = uid, gid
+        info.uname = info.gname = ""
+        if info.isdir():
+            info.mode = 0o755
+        elif info.isfile():
+            info.mode = 0o755 if info.mode & 0o100 else 0o644
+        return info
+
     with tarfile.open(fileobj=buffer, mode="w") as tar:
         for entry in sorted(source.rglob("*")):
-            tar.add(entry, arcname=entry.relative_to(source).as_posix(), recursive=False)
+            tar.add(
+                entry,
+                arcname=entry.relative_to(source).as_posix(),
+                recursive=False,
+                filter=normalise,
+            )
     return buffer.getvalue()
 
 
-def _tar_single_file(name: str, content: bytes) -> bytes:
+def _tar_single_file(name: str, content: bytes, owner: tuple[int, int] = (0, 0)) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as tar:
         info = tarfile.TarInfo(name=name)
         info.size = len(content)
         info.mode = 0o644
+        info.uid, info.gid = owner
         tar.addfile(info, io.BytesIO(content))
     return buffer.getvalue()
+
+
+def _owner_ids(user: str | None) -> tuple[int, int]:
+    """Map a Docker ``user`` spec to numeric ids for tar ownership.
+
+    Named users cannot be resolved from outside the image, so they fall back to
+    root-owned files; the explicit chown after upload fixes those up.
+    """
+    if not user:
+        return (0, 0)
+    uid, _, gid = user.partition(":")
+    try:
+        return (int(uid), int(gid) if gid else int(uid))
+    except ValueError:
+        return (0, 0)
 
 
 def _strip_archive_root(name: str) -> str:

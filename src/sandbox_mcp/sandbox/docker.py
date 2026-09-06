@@ -306,10 +306,17 @@ class DockerSandboxBackend(SandboxBackend):
         api = client.api
         pid_file = f"{CONTROL_DIR}/{int(time.time() * 1_000_000)}.pid"
 
-        # Record the shell's own pid, then exec the command over it, so the
-        # recorded pid *is* the command. That gives us something to signal when
-        # the timeout fires -- the Engine API has no "kill this exec" call.
-        wrapped = f"mkdir -p {CONTROL_DIR} 2>/dev/null; echo $$ > {pid_file}; exec {command}"
+        # Run the command as a backgrounded child shell, record that child's pid,
+        # then wait on it. The Engine API has no "kill this exec" call, so the
+        # pid file is the only handle a timeout has. Quoting the command and
+        # handing it to a child shell (rather than exec'ing it) is what makes
+        # pipelines, `&&` chains and builtins behave.
+        wrapped = (
+            f"mkdir -p {CONTROL_DIR} 2>/dev/null; "
+            f"/bin/sh -c {shlex.quote(command)} & __sbx_pid=$!; "
+            f"echo $__sbx_pid > {pid_file}; "
+            f"wait $__sbx_pid"
+        )
 
         try:
             created = await asyncio.to_thread(

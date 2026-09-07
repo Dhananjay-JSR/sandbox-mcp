@@ -1,0 +1,14 @@
+{
+  "name": "payments-service",
+  "version": "1.4.0",
+  "description": "A small payments helper library, pinned to Node 20.",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18 <21"
+  },
+  "license": "MIT"
+}

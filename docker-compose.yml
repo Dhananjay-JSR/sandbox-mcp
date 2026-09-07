@@ -1,0 +1,46 @@
+# Runs the Sandbox MCP server itself in a container, reachable over Streamable
+# HTTP at http://localhost:8000/mcp.
+#
+# READ THIS BEFORE USING IT
+# -------------------------
+# The server needs the Docker socket to create sandboxes. Handing a container
+# the Docker socket is equivalent to giving it root on the host, so:
+#
+#   * this is for the *server*, which is trusted code you are running yourself;
+#   * the socket is never mounted into an experiment container -- the backend
+#     has no code path that does so, and the integration tests assert it;
+#   * do not expose port 8000 beyond localhost without putting authentication
+#     in front of it.
+#
+# For local use with Claude Code, prefer stdio (`sandbox-mcp`) and skip this
+# file entirely. See the README.
+
+services:
+  sandbox-mcp:
+    build: .
+    image: sandbox-mcp:latest
+    container_name: sandbox-mcp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Change the left side if your runtime puts the socket elsewhere
+      # (OrbStack: ~/.orbstack/run/docker.sock, Colima: ~/.colima/...).
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandbox-state:/data
+      # Mount the projects you want experiments to be able to copy from,
+      # read-only, and point SANDBOX_MCP_ALLOWED_PROJECT_ROOTS at the mount.
+      # - ${HOME}/code:/projects:ro
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      SANDBOX_MCP_STATE_DIR: /data
+      SANDBOX_MCP_LOG_LEVEL: INFO
+      SANDBOX_MCP_DEFAULT_NETWORK_MODE: none
+      # SANDBOX_MCP_ALLOWED_PROJECT_ROOTS: '["/projects"]'
+    # The socket is root:docker on Linux; add the host's docker gid so the
+    # non-root server user can reach it. `stat -c %g /var/run/docker.sock`.
+    # group_add:
+    #   - "999"
+
+volumes:
+  sandbox-state:

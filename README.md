@@ -21,44 +21,36 @@ Sandbox MCP is the third answer: give the agent somewhere real to work that
 
 ## Without a sandbox
 
-```
-Claude Code
-     |
-     v
-Host Machine
-     |
-     +-- npm install
-     +-- scripts
-     +-- migrations
-     +-- file modifications
-     +-- arbitrary execution
+```mermaid
+flowchart TD
+    CC["Claude Code"] --> HOST["Your machine"]
+    HOST --> A["npm install"]
+    HOST --> B["scripts"]
+    HOST --> C["migrations"]
+    HOST --> D["file modifications"]
+    HOST --> E["arbitrary execution"]
+
+    classDef danger fill:#fdeceb,stroke:#d1453b,color:#7a1f18
+    classDef actor fill:#eef2f7,stroke:#5b6b7f,color:#22303f
+    class HOST,A,B,C,D,E danger
+    class CC actor
 ```
 
 ## With Sandbox MCP
 
-```
-Claude Code
-     |
-     v
-FastMCP
-     |
-     v
-Experiment Policy
-     |
-     v
-Docker Sandbox
-     |
-     +-- execute
-     +-- modify
-     +-- test
-     +-- build
-     +-- experiment
-     |
-     v
-Results
-     |
-     v
-Claude Code
+```mermaid
+flowchart TD
+    CC["Claude Code"] --> MCP["FastMCP"]
+    MCP --> POL["Experiment policy"]
+    POL --> SBX["Docker sandbox"]
+    SBX --> WORK["execute · modify · test<br/>build · experiment"]
+    WORK --> RES["Results"]
+    RES --> CC
+
+    classDef safe fill:#e7f4ea,stroke:#2f7d4f,color:#14432a
+    classDef actor fill:#eef2f7,stroke:#5b6b7f,color:#22303f
+    class SBX,WORK safe
+    class CC,MCP,POL,RES actor
 ```
 
 ---
@@ -82,26 +74,30 @@ That is not a wording preference; it changes what the agent can do.
 The agent never receives Docker API access. It states an intent; the server
 decides how that intent is realised.
 
-```
-Claude Code
-     |
-     | MCP
-     v
-Sandbox MCP
-     |
-     +--> Policy / Security     <- validates, clamps, refuses
-     +--> Experiment Manager    <- lifecycle, state machine
-     +--> Job Manager           <- async execution, timeouts, cancellation
-     +--> Result Collector      <- diffs, artifacts, reports
-     |
-     v
-Docker Engine API  (via /var/run/docker.sock, SDK only -- no docker CLI)
-     |
-     v
-Disposable Sandbox
-     |
-     v
-Results -> Claude Code
+```mermaid
+flowchart TB
+    CC["Claude Code"] -- "MCP tool call" --> SERVER
+
+    subgraph SERVER["Sandbox MCP · the only component holding the socket"]
+        direction LR
+        POL["Policy / Security<br/><i>validates · clamps · refuses</i>"]
+        EXP["Experiment Manager<br/><i>lifecycle · state machine</i>"]
+        JOB["Job Manager<br/><i>async · timeouts · cancellation</i>"]
+        COL["Result Collector<br/><i>diffs · artifacts · reports</i>"]
+        POL --> EXP --> JOB --> COL
+    end
+
+    SERVER --> API["Docker Engine API<br/><i>/var/run/docker.sock — SDK only, no docker CLI</i>"]
+    API --> SBX["Disposable sandbox<br/><i>no socket · no host filesystem · no network</i>"]
+    SBX --> OUT["Structured result<br/><i>back to Claude Code</i>"]
+
+    classDef actor fill:#eef2f7,stroke:#5b6b7f,color:#22303f
+    classDef infra fill:#eaf1fb,stroke:#3a6ea8,color:#173352
+    classDef safe fill:#e7f4ea,stroke:#2f7d4f,color:#14432a
+    class CC,POL,EXP,JOB,COL,OUT actor
+    class API infra
+    class SBX safe
+    style SERVER fill:#fbfcfd,stroke:#9aa7b4,color:#22303f
 ```
 
 **Docker** is the isolation mechanism.
@@ -140,12 +136,28 @@ Experiments move through an explicit, validated state machine. An illegal
 transition is an error, not a silently corrupted record — which matters,
 because `DESTROYED` is what tells the server a container no longer exists.
 
-```
-CREATING ──► READY ──► RUNNING ──┬─► COMPLETED ──► DESTROYED
-    │          │         │       ├─► FAILED    ──► DESTROYED
-    │          │         │       ├─► TIMEOUT   ──► DESTROYED
-    │          │         │       └─► CANCELLED ──► DESTROYED
-    └──► FAILED          └──► READY
+```mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> CREATING
+    CREATING --> READY: sandbox provisioned
+    READY --> RUNNING: command submitted
+    RUNNING --> READY: exit 0
+
+    state "terminal, but the sandbox is still alive" as OUTCOME {
+        direction LR
+        COMPLETED
+        FAILED
+        TIMEOUT
+        CANCELLED
+    }
+
+    CREATING --> FAILED: could not start
+    RUNNING --> OUTCOME
+    OUTCOME --> RUNNING: more work
+    OUTCOME --> DESTROYED: destroy_experiment
+    READY --> DESTROYED: destroy_experiment
+    DESTROYED --> [*]
 ```
 
 ---
@@ -160,15 +172,20 @@ The agent talks to the server; the server talks to Docker.
 
 The project is **copied**, not mounted:
 
-```
-HOST PROJECT
-     |
-     | snapshot (read-only pass, filtered)
-     v
-SANDBOX PROJECT COPY  ── also the baseline every diff is computed against
-     |
-     v
-DOCKER CONTAINER
+```mermaid
+flowchart LR
+    HOST["HOST PROJECT<br/><i>read once, never written</i>"]
+    SNAP["SANDBOX COPY<br/><i>also the baseline every diff uses</i>"]
+    CON["DOCKER CONTAINER"]
+
+    HOST -- "snapshot: filtered, read-only pass" --> SNAP
+    SNAP -- "put_archive" --> CON
+    CON -. "no path back" .-x HOST
+
+    classDef host fill:#fdeceb,stroke:#d1453b,color:#7a1f18
+    classDef safe fill:#e7f4ea,stroke:#2f7d4f,color:#14432a
+    class HOST host
+    class SNAP,CON safe
 ```
 
 - Default strategy is `COPY_TO_SANDBOX`. `READ_ONLY_BIND_MOUNT` exists for
@@ -340,17 +357,18 @@ The compose file mounts the Docker socket **into the server** — read the
 warning at the top of it first, and do not expose port 8000 beyond localhost
 without authentication in front of it.
 
-```
-Claude Code
-    |
-    v
-Sandbox MCP        (holds the socket)
-    |
-    v
-Docker Desktop / OrbStack
-    |
-    v
-Sandbox            (no socket, no host filesystem, no network)
+```mermaid
+flowchart TD
+    CC["Claude Code"] --> SRV["Sandbox MCP<br/><i>holds the socket</i>"]
+    SRV --> ENG["Docker Desktop / OrbStack"]
+    ENG --> SBX["Sandbox<br/><i>no socket · no host filesystem · no network</i>"]
+
+    classDef actor fill:#eef2f7,stroke:#5b6b7f,color:#22303f
+    classDef infra fill:#eaf1fb,stroke:#3a6ea8,color:#173352
+    classDef safe fill:#e7f4ea,stroke:#2f7d4f,color:#14432a
+    class CC,SRV actor
+    class ENG infra
+    class SBX safe
 ```
 
 ---
@@ -408,25 +426,43 @@ Ask Claude Code:
 > Node 22. You may install dependencies, modify files, run tests and experiment
 > freely, but **do not modify my actual working tree**.
 
-What happens — every number below is from an actual run, and the whole thing
+What happens — every figure below is from an actual run, and the whole thing
 works with the network disabled:
 
-```
-1.  create_experiment      node:22-slim, network none      -> exp_2859b8eb8656, 13 files
-2.  execute_experiment     npm install                     -> exit 1, EBADENGINE
-3.  read_sandbox_file      package.json                    -> engines.node ">=18 <21"
-4.  write_sandbox_file     package.json                    -> engines.node ">=18"
-5.  execute_experiment     npm install                     -> exit 0
-6.  run_tests              (auto-detected: npm)            -> 37 passed, 3 failed
-                                                              seal produces hex output
-                                                              seal and open round-trip
-                                                              seal round-trips unicode
-7.  read_sandbox_file      src/crypto.js                   -> crypto.createCipher(...)
-8.  write_sandbox_file     src/crypto.js                   -> createCipheriv + scrypt key + IV
-9.  run_tests                                              -> 40 passed, 0 failed
-10. inspect_changes                                        -> 3 modified, +9 -4
-11. collect_artifacts      src/crypto.js                   -> kept for the developer
-12. destroy_experiment                                     -> report, sandbox removed
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CC as Claude Code
+    participant S as Sandbox MCP
+    participant D as Disposable sandbox
+
+    CC->>S: create_experiment(node:22-slim, network none)
+    S->>D: snapshot 13 files, start container
+    S-->>CC: exp_2859b8eb8656 · READY
+
+    CC->>S: execute_experiment("npm install")
+    S-->>CC: exit 1 · EBADENGINE
+    CC->>S: read_sandbox_file("package.json")
+    S-->>CC: engines.node ">=18 <21"
+    CC->>S: write_sandbox_file("package.json", ">=18")
+    CC->>S: execute_experiment("npm install")
+    S-->>CC: exit 0
+
+    CC->>S: run_tests()
+    S-->>CC: 37 passed · 3 failed<br/>seal produces hex output<br/>seal and open round-trip<br/>seal round-trips unicode
+    CC->>S: read_sandbox_file("src/crypto.js")
+    S-->>CC: crypto.createCipher(...)
+    CC->>S: write_sandbox_file("src/crypto.js", createCipheriv + scrypt key + IV)
+    CC->>S: run_tests()
+    S-->>CC: 40 passed · 0 failed
+
+    CC->>S: inspect_changes()
+    S-->>CC: 3 modified · +9 -4
+    CC->>S: collect_artifacts(["src/crypto.js"])
+    S-->>CC: kept for the developer
+    CC->>S: destroy_experiment()
+    S->>D: remove container and snapshot
+    S-->>CC: report · host working tree UNCHANGED
 ```
 
 ```
@@ -478,17 +514,21 @@ What is left is the part the agent genuinely cannot do for itself: the
 isolation boundary, the policy that enforces it, the state machine, the
 baseline diff, and the audit trail. Those are the product.
 
-Concretely, the loop lives in the transcript instead of in the server:
+Concretely, the loop lives in the transcript instead of inside the server:
 
-```
-create_experiment  ─┐
-execute_experiment  │
-run_tests           │   Claude Code decides what to do next at each step,
-read_sandbox_file   ├─  with the full output in front of it. The server
-write_sandbox_file  │   just refuses anything that would reach the host.
-run_tests           │
-inspect_changes    ─┘
-destroy_experiment
+```mermaid
+flowchart LR
+    DEC["Decide the next step<br/><i>Claude Code — the loop lives here</i>"]
+    ACT["Call a tool"]
+    SRV["Sandbox MCP<br/><i>enforces · refuses · records</i>"]
+    OBS["Read the full output"]
+
+    DEC --> ACT --> SRV --> OBS --> DEC
+
+    classDef actor fill:#eef2f7,stroke:#5b6b7f,color:#22303f
+    classDef safe fill:#e7f4ea,stroke:#2f7d4f,color:#14432a
+    class DEC,ACT,OBS actor
+    class SRV safe
 ```
 
 That is the primary demo, and it is what the integration suite runs.
